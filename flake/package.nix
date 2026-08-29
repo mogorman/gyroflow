@@ -16,6 +16,8 @@
   ocl-icd,
   opencv,
   versionCheckHook,
+  util-linuxMinimal,
+  libglvnd,
 }:
 let
   lens-profiles-version = "v41";
@@ -63,6 +65,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     qt6.qtsvg
     alsa-lib
     ocl-icd
+    # Runtime deps of the Blackmagic RAW SDK libs (libuuid, libGL) so the
+    # mdk-braw plugin can dlopen libBlackmagicRawAPI.so and resolve its deps.
+    util-linuxMinimal
+    libglvnd
   ];
 
   postPatch = ''
@@ -144,8 +150,19 @@ rustPlatform.buildRustPackage (finalAttrs: {
     # Point the mdk-braw plugin at the pre-installed Blackmagic RAW SDK so
     # BRAW files decode without the in-app download. The plugin dlopens
     # libBlackmagicRawAPI.so from $BRAWSDK_DIR.
+    #
+    # The BRAW SDK decoder libs have their own runtime deps that the dlopen
+    # must resolve, so prepend their lib dirs to LD_LIBRARY_PATH:
+    #   - libuuid (util-linux), libGL (libglvnd): used by the core API lib
+    #   - libOpenCL (ocl-icd): used by the OpenCL decoder (AMD/Intel GPUs)
+    # The CUDA decoder's libcuda.so.1 is provided by the NVIDIA driver at
+    # runtime on systems that have it; it is not bundled here.
     makeQtWrapper $out/opt/Gyroflow/gyroflow $out/bin/gyroflow \
-      --set BRAWSDK_DIR $out/opt/Gyroflow/lib
+      --set BRAWSDK_DIR $out/opt/Gyroflow/lib \
+      --prefix LD_LIBRARY_PATH : $out/opt/Gyroflow/lib \
+      --prefix LD_LIBRARY_PATH : ${util-linuxMinimal.lib}/lib \
+      --prefix LD_LIBRARY_PATH : ${libglvnd}/lib \
+      --prefix LD_LIBRARY_PATH : ${ocl-icd}/lib
   '';
 
   desktopItems = [
