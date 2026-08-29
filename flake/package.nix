@@ -141,7 +141,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
 
   postFixup = ''
-    makeQtWrapper $out/opt/Gyroflow/gyroflow $out/bin/gyroflow
+    # Point the mdk-braw plugin at the pre-installed Blackmagic RAW SDK so
+    # BRAW files decode without the in-app download. The plugin dlopens
+    # libBlackmagicRawAPI.so from $BRAWSDK_DIR.
+    makeQtWrapper $out/opt/Gyroflow/gyroflow $out/bin/gyroflow \
+      --set BRAWSDK_DIR $out/opt/Gyroflow/lib
   '';
 
   desktopItems = [
