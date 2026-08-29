@@ -24,6 +24,14 @@ let
     url = "https://github.com/gyroflow/lens_profiles/releases/download/${lens-profiles-version}/profiles.cbor.gz";
     hash = "sha256-W5E2aXt13fnNogll8X54a2yFMOPVkQn4dQUGlgLn9nY=";
   };
+
+  # Blackmagic RAW SDK, pre-installed so the user never sees the
+  # "install BRAW plugin" download prompt. Extracted into the package's
+  # lib/ dir at build time (see postInstall).
+  braw-sdk = fetchurl {
+    url = "https://api.gyroflow.xyz/sdk/Blackmagic_RAW_SDK_Linux_5.0.0.tar.gz";
+    hash = "sha256-um38/Dl1qejuNFRoLvVvcuwIG6nH/EhjfIxDqALwRjc=";
+  };
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "gyroflow";
@@ -123,6 +131,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
     install -D ${./gyroflow-open.sh} $out/bin/gyroflow-open
     install -Dm644 ${./gyroflow-mime.xml} $out/share/mime/packages/gyroflow.xml
     install -Dm644 resources/icon.svg $out/share/icons/hicolor/scalable/apps/gyroflow.svg
+
+    # Pre-install the Blackmagic RAW SDK so BRAW files decode without the
+    # user having to trigger the in-app download. SDK_PATH is <exe dir>/lib/.
+    mkdir -p $out/opt/Gyroflow/lib
+    tar -xzf ${braw-sdk} -C $out/opt/Gyroflow/lib
+    # The SDK tarball ships a stray 0-byte braw.tar.gz; drop it.
+    rm -f $out/opt/Gyroflow/lib/braw.tar.gz
   '';
 
   postFixup = ''
