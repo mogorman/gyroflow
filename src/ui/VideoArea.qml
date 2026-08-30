@@ -43,6 +43,43 @@ Item {
 
     property Menu.VideoInformation vidInfo: null;
 
+    // Lives on the root item (always active) rather than inside the MDKVideo item, which is
+    // hidden (opacity 0) while a load is stuck - a Timer under an invisible item never fires.
+    //
+    // The BRAW GPU (OpenCL) decoder does a one-time init on the first BRAW decode in a process,
+    // which on some systems hangs without producing a frame (the MDK media never reaches
+    // "Prepared", so nothing renders and the "Loading..." overlay is stuck). Re-issuing the
+    // decode in the same process works, because the one-time init has by then run. So this timer
+    // is armed only for that first, not-yet-warmed BRAW decode: if a real frame has rendered by
+    // the time it fires, mark the decoder warm and stop; otherwise re-issue the load (a few
+    // times), then surface the normal "failed to load" message. Non-BRAW files never arm it.
+    Timer {
+        id: loadRetryTimer;
+        interval: 3000;
+        onTriggered: {
+            // A real decoded frame is larger than MDK's 32x32 placeholder texture, which the
+            // surface briefly reports before/without any frame being decoded.
+            if (vid.surfaceWidth > 32 && vid.surfaceHeight > 32) {
+                vid.brawDecoderWarmed = true; // a real frame rendered -> decoder is warm
+                loadRetryTimer.stop();
+                return;
+            }
+            if (vid.loadRetryCount < 3) {
+                vid.loadRetryCount++;
+                console.log("gyroflow: BRAW first decode produced no frame after",
+                          loadRetryTimer.interval / 1000, "s, re-issuing decode (attempt",
+                          vid.loadRetryCount + ")");
+                controller.load_video(root.loadedFileUrl, vid);
+                loadRetryTimer.restart();
+            } else if (!vid.errorShown) {
+                vid.errorShown = true;
+                messageBox(Modal.Error, qsTr("Failed to load the selected file, it may be unsupported or invalid."), [ { "text": qsTr("Ok") } ]);
+                root.pendingGyroflowData = null;
+                stabEnabledBtn.checked = true;
+            }
+        }
+    }
+
     function loadGyroflowData(obj: var, queueJobId: var): void {
         root.pendingGyroflowData = null;
         root.pendingQueueJobId = 0;
@@ -433,6 +470,16 @@ Item {
         vid.errorShown = false;
         render_queue.editing_job_id = 0;
         controller.load_video(url, vid);
+        // The BRAW GPU (OpenCL) decoder does a one-time init on the first BRAW decode in a
+        // process, which can hang without producing a frame. Arm a short retry *only* for that
+        // first, not-yet-warmed BRAW decode; once it has decoded once the decoder is warm and
+        // this is disabled for the rest of the session. Non-BRAW files are never affected.
+        if (filename.toLowerCase().endsWith(".braw") && !vid.brawDecoderWarmed) {
+            vid.loadRetryCount = 0;
+            loadRetryTimer.restart();
+        } else {
+            loadRetryTimer.stop();
+        }
         if (!isCalibrator) {
             const suffix = window.advanced.defaultSuffix.text;
             window.outputFile.setFilename(filesystem.filename_with_suffix(filename, suffix).replace(/%0[0-9]+d/, ""));
@@ -644,6 +691,13 @@ Item {
                     Ease on opacity { }
                     anchors.fill: parent;
                     property bool loaded: false;
+                    // Number of automatic re-decode attempts made for the current file.
+                    property int loadRetryCount: 0;
+                    // Set once the BRAW GPU (OpenCL) decoder has successfully produced a frame
+                    // in this process (i.e. its one-time init is done). While false, the first
+                    // BRAW decode is armed with a retry in case that init hangs; once true the
+                    // retry logic is disabled for the rest of the session.
+                    property bool brawDecoderWarmed: false;
 
                     property bool stabEnabled: stabEnabledBtn.checked;
                     transform: [
@@ -693,11 +747,31 @@ Item {
                         window.motionData.orientationIndicator.updateOrientation(timeline.position * timeline.durationMs * 1000);
                         updateTurnSpeed();
                     }
+                    // The moment a BRAW frame is actually rendered, the one-time GPU (OpenCL)
+                    // decoder init is done. Mark it warm so the first-decode retry is never
+                    // armed again for the rest of this process.
+                    // A real decoded frame is larger than MDK's 32x32 placeholder texture. The
+                    // surface briefly reports the 32x32 placeholder before/without any frame being
+                    // decoded, so we must not treat that as "loaded" - only a surface bigger than
+                    // the placeholder means a frame actually rendered.
+                    onSurfaceSizeChanged: {
+                        if (surfaceWidth > 32 && surfaceHeight > 32 &&
+                            root.loadedFileUrl.toString().toLowerCase().endsWith(".braw")) {
+                            brawDecoderWarmed = true; // a real frame rendered -> decoder is warm
+                            loadRetryTimer.stop();
+                        }
+                    }
                     onMetadataLoaded: (md) => {
                         Qt.callLater(fileLoaded, md);
                     }
                     function fileLoaded(md: var): void {
                         loaded = vid.videoWidth > 0;
+                        // NOTE: do NOT stop loadRetryTimer here. 'loaded' only means the
+                        // metadata reported a size, which the BRAW decoder does even when its
+                        // first frame never renders (the exact hang we're retrying around). The
+                        // retry is only cancelled once a real frame has actually rendered, which
+                        // is handled in onSurfaceSizeChanged (surface bigger than the 32x32
+                        // placeholder).
                         videoLoader.active = false;
                         vidInfo.loader = false;
                         timeline.resetTrim();
