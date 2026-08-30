@@ -63,6 +63,30 @@ thread_local! {
     static CACHED_WGPU: ThreadLocalWgpuCache = ThreadLocalWgpuCache(RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(15).unwrap())));
     #[cfg(feature = "use-opencl")]
     static CACHED_OPENCL: RefCell<lru::LruCache<u32, opencl::OclWrapper>> = RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(15).unwrap()));
+    // Per-thread identifier used to keep the shared OpenCL kernel cache distinct
+    // across worker threads. A user thread_local is read here instead of
+    // std::thread::current().id() because the latter aborts with
+    // "use of std::thread::current() is not possible after the thread's local
+    // data has been destroyed" when a GPU/render callback runs on a worker
+    // thread that is being torn down (e.g. on application exit).
+    static THREAD_ID: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
+}
+
+// Monotonic source for the per-thread ids above.
+static THREAD_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A stable, unique-per-thread identifier. Unlike `std::thread::current().id()`,
+/// reading this never aborts even if the calling thread's TLS is being torn down,
+/// so it is safe to use in a cache key computed from a worker-thread callback.
+fn current_thread_id() -> u64 {
+    THREAD_ID.with(|id| {
+        if let Some(v) = id.get() {
+            return v;
+        }
+        let v = THREAD_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        id.set(Some(v));
+        v
+    })
 }
 
 /// Drop the current thread's cached GPU pipelines to reclaim VRAM.
@@ -365,7 +389,7 @@ impl Stabilization {
             self.size,
             self.output_size,
             self.interpolation,
-            std::thread::current().id(),
+            current_thread_id(),
         )
     }
     pub fn get_current_checksum(&self, buffers: &Buffers) -> u32 {
